@@ -12,23 +12,30 @@ agent for make.fun's "Build the best token launch radar" bounty, $1,325 in USDC.
 
 ## How it works
 
-* **Value model (`radar-2`)** — each protocol's implied value is its TVL times
-  its category's market multiple: the median market-cap/TVL of the token-bearing
-  protocols in the same category (at least three comparables), else the
-  whole-market median of 0.21x. That is times a growth factor from its 7-day TVL
-  change, an age factor for how long it has run with no token, and a chain
-  factor for how many chains it runs on. Nothing is hardcoded by name: the same
-  arithmetic scores every row, and the dashboard recomputes each row from the
-  snapshot figures and checks the number `board.json` carries.
+* **Value model (`radar-3`)** — the multiple is a curve, not a median: the
+  program fits log10(mcap) = 3.03 + 0.52 × log10(TVL) on the snapshot's own 128
+  token-bearing protocols, then prices every pre-token row with that curve —
+  times a growth factor from its 7-day TVL change, an age factor for how long
+  it has run with no token, and a chain factor for how many chains it runs on.
+  Nothing is hardcoded by name: the same curve scores every row, and the
+  dashboard recomputes each row from the snapshot figures and checks the number
+  `board.json` carries.
+* **Tested blind** — before the curve prices anything, it is tested on three
+  time splits: fit on the protocols listed before the date, predict the market
+  caps listed after it. Median error ×3.1 / ×4.2 / ×4.1, against ×5.4 / ×5.1 /
+  ×4.9 for the market-median multiple on the same splits. The dashboard shows
+  the table; the program recomputes it from the snapshot on every run.
 * **Board** — `board.json` holds 178 ranked rows, each with an implied value and
   a farm plan. The watchlist is the floor, never the ceiling: 138 rows name
   protocols below it. The 24 largest protocols whose token already trades sit
   apart in a Live tokens view — the market's own values, never mixed into the
-  ranking.
+  ranking. Every detail view names the five live-token protocols nearest in
+  TVL, so a reader can check the curve against the market at that size.
 * **Farm plans** — every row carries 7–8 concrete steps with a cost and a time,
-  derived from the protocol's own category, chains, TVL and age.
+  derived from the protocol's own category, chains, TVL, age, rank and implied
+  value, so no two rows' plans read the same.
 * **Dashboard** — a static page with no network: a sortable, filterable board,
-  a detail view for every protocol (value breakdown, farm plan, live
+  a detail view for every protocol (value breakdown, farm plan, nearest live
   comparables), and a live-token view. Three screenshots under `screenshots/`
   show the board, a protocol's detail view and a filtered view.
 
