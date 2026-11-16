@@ -70,6 +70,13 @@ header.hero { border-bottom: 1px solid var(--border); padding-bottom: var(--step
 .oos th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
 .oos td:last-child, .oos td:nth-child(3), .oos td:nth-child(4) { font-family: var(--font-num); text-align: right; }
 .oos th:nth-child(3), .oos th:nth-child(4) { text-align: right; }
+/* The concentration tables share the blind-test table's look: same hairlines,
+   same muted uppercase headers, numbers right-aligned in the numeric face. */
+.sectors, .bands { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: var(--step-2); }
+.sectors th, .sectors td, .bands th, .bands td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+.sectors th, .bands th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.sectors td.num, .bands td.num { font-family: var(--font-num); text-align: right; }
+.sectors th:nth-child(n+2), .bands th:nth-child(n+2) { text-align: right; }
 
 .tabs { display: flex; gap: var(--step-2); margin-bottom: var(--step-2); }
 .tab { background: var(--surface); color: var(--muted); border: 1px solid var(--border); border-radius: var(--radius-control); padding: 6px 12px; }

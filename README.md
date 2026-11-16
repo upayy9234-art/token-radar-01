@@ -41,6 +41,14 @@ agent for make.fun's "Build the best token launch radar" bounty, $1,325 in USDC.
   value, so no two rows' plans read the same. Gas is priced per chain: about
   $5 a step on Ethereum, under $0.10 on Solana, about $0.50 on a cheap EVM
   chain, about $1 anywhere else — planning figures, not quotes.
+* **Board shape, not just ranks** — the dashboard also shows where the
+  board's value concentrates (each category's rows and share of implied
+  value, with a Herfindahl index over value) and what the market itself pays
+  (the quartiles and band counts of mcap/TVL across the 128 comparables, next
+  to the fitted curve's slope at the small end, the middle and the big end of
+  its range) — so a reader can see the board's shape and check the curve
+  against the market's own spread instead of taking the ranking's word for
+  it. Both views are computed from the same snapshot figures on every run.
 * **Dashboard** — a static page with no network: a sortable, filterable board,
   a detail view for every protocol (value breakdown, farm plan, nearest live
   comparables), a live-token view, and a scatter chart of the fitted curve

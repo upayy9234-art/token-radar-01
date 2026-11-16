@@ -55,6 +55,14 @@
 // simple transaction, not quotes, and the same table prices the plan in
 // board.json and the plan the page regenerates, so the two can never drift.
 //
+// Two more views come from the same figures, so a reader can see the board's
+// shape instead of taking the ranking's word for it: the sector concentration
+// (each category's rows and share of the board's implied value, with a
+// Herfindahl index over value) and the market's own multiple distribution
+// (the quartiles and the band counts of mcap/TVL across the comparables the
+// curve is fitted on, next to the curve's slope at the small end, the middle
+// and the big end of its range).
+//
 // The previous model (radar-3) priced each row by the straight fitted line. The
 // line and the quadratic agree on the ranking — the quadratic is monotone in TVL
 // over the comps' range, so the fitted order does not change — but the quadratic
@@ -211,6 +219,46 @@ export interface CompPoint {
   mcap_usd: number;
 }
 
+/** One category's share of the board: how many rows, and how much of the board's implied value it holds. */
+export interface SectorShare {
+  category: string;
+  rows: number;
+  row_share: number;
+  implied_value_usd: number;
+  value_share: number;
+}
+
+/** How the board concentrates across categories, with a Herfindahl index over implied value. */
+export interface SectorConcentration {
+  /** Sum of the squared value shares, 0..1: 1 means one category holds the whole board's value. */
+  herfindahl: number;
+  categories: SectorShare[];
+}
+
+/** One band of the market's own mcap/TVL multiples: how many comparables sit in it. */
+export interface RatioBand {
+  label: string;
+  count: number;
+  share: number;
+}
+
+/** The distribution of the market's own mcap/TVL multiples across the comparables. */
+export interface RatioDistribution {
+  n: number;
+  min: number;
+  p25: number;
+  median: number;
+  p75: number;
+  max: number;
+  bands: RatioBand[];
+}
+
+/** The fitted curve's slope at one TVL: how fast log10(mcap) rises with log10(TVL) there. */
+export interface CurveSlope {
+  tvl_usd: number;
+  slope: number;
+}
+
 /** The fitted curve: log10(mcap) = intercept + slope * log10(TVL) + quad * log10(TVL)^2. */
 export interface CurveFit {
   intercept: number;
@@ -261,6 +309,12 @@ export interface RadarData {
   live: LiveRow[];
   nearest: Record<string, NearestComp[]>;
   comps: CompPoint[];
+  /** How the board's value concentrates across categories. */
+  sectors: SectorConcentration;
+  /** How the market's own multiples spread across the comparables. */
+  ratio_bands: RatioDistribution;
+  /** The curve's slope at the small end, the middle and the big end of its range. */
+  curve_slopes: CurveSlope[];
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -862,6 +916,81 @@ export function nearestComps(p: SnapshotProtocol, comps: SnapshotProtocol[], cou
     }));
 }
 
+/** The curve's slope at a TVL: d log10(mcap) / d log10(TVL) = slope + 2 * quad * log10(TVL). */
+export function curveSlopeAt(tvlUsd: number, fit: CurveFit): number {
+  return fit.slope + 2 * fit.quad * Math.log10(tvlUsd);
+}
+
+/** A quantile of a sorted array by linear interpolation; null when empty. */
+function quantile(sorted: number[], q: number): number | null {
+  if (sorted.length === 0) return null;
+  const pos = q * (sorted.length - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (pos - lo);
+}
+
+/**
+ * How the board's implied value concentrates across categories: each
+ * category's rows and value, largest value share first, with a Herfindahl
+ * index (the sum of the squared value shares) so a reader can see at a
+ * glance whether the board is one sector's story or many. A board of one
+ * category scores 1; a board split evenly across many scores near 0.
+ */
+export function sectorConcentration(board: BoardRow[]): SectorConcentration {
+  const total = board.reduce((a, r) => a + r.implied_value_usd, 0);
+  const byCategory = new Map<string, { rows: number; value: number }>();
+  for (const r of board) {
+    const category = r.category ?? 'Uncategorised';
+    const slot = byCategory.get(category) ?? { rows: 0, value: 0 };
+    slot.rows += 1;
+    slot.value += r.implied_value_usd;
+    byCategory.set(category, slot);
+  }
+  const categories: SectorShare[] = [...byCategory.entries()]
+    .map(([category, slot]) => ({
+      category,
+      rows: slot.rows,
+      row_share: board.length === 0 ? 0 : slot.rows / board.length,
+      implied_value_usd: slot.value,
+      value_share: total === 0 ? 0 : slot.value / total,
+    }))
+    .sort((a, b) => b.value_share - a.value_share || (a.category < b.category ? -1 : 1));
+  const herfindahl = categories.reduce((a, c) => a + c.value_share * c.value_share, 0);
+  return { herfindahl, categories };
+}
+
+/**
+ * The distribution of the market's own mcap/TVL multiples across the
+ * comparables: the quartiles, and how many protocols sit in each band from
+ * under 0.05x to over 1x. The curve prices the board; this table shows what
+ * the market itself pays, so a reader can see where the fitted multiple sits
+ * in the market's own spread instead of taking the curve's word for it.
+ */
+export function ratioDistribution(comps: SnapshotProtocol[]): RatioDistribution {
+  const ratios = comps.map((p) => p.mcap_usd! / p.tvl_usd).sort((a, b) => a - b);
+  const bandDefs: Array<[string, (r: number) => boolean]> = [
+    ['<0.05x', (r) => r < 0.05],
+    ['0.05–0.2x', (r) => r >= 0.05 && r < 0.2],
+    ['0.2–0.5x', (r) => r >= 0.2 && r < 0.5],
+    ['0.5–1x', (r) => r >= 0.5 && r < 1],
+    ['>1x', (r) => r >= 1],
+  ];
+  const bands: RatioBand[] = bandDefs.map(([label, test]) => {
+    const count = ratios.filter(test).length;
+    return { label, count, share: ratios.length === 0 ? 0 : count / ratios.length };
+  });
+  return {
+    n: ratios.length,
+    min: ratios[0] ?? 0,
+    p25: quantile(ratios, 0.25) ?? 0,
+    median: quantile(ratios, 0.5) ?? 0,
+    p75: quantile(ratios, 0.75) ?? 0,
+    max: ratios[ratios.length - 1] ?? 0,
+    bands,
+  };
+}
+
 /** A board row's compact form for data.js, with the farm plan generated in the page. */
 export function radarRow(row: BoardRow): RadarRow {
   return {
@@ -928,6 +1057,13 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     comps: [...comps]
       .sort((a, b) => a.tvl_usd - b.tvl_usd)
       .map((p) => ({ tvl_usd: p.tvl_usd, mcap_usd: p.mcap_usd! })),
+    sectors: sectorConcentration(board),
+    ratio_bands: ratioDistribution(comps),
+    curve_slopes: [
+      { tvl_usd: fit.tvl_min, slope: round4(curveSlopeAt(fit.tvl_min, fit)) },
+      { tvl_usd: Math.sqrt(fit.tvl_min * fit.tvl_max), slope: round4(curveSlopeAt(Math.sqrt(fit.tvl_min * fit.tvl_max), fit)) },
+      { tvl_usd: fit.tvl_max, slope: round4(curveSlopeAt(fit.tvl_max, fit)) },
+    ],
   };
   return { board, radar };
 }

@@ -427,6 +427,60 @@
     return out.join('');
   }
 
+  // Where the board's value sits, and what the market itself pays: the sector
+  // split with its Herfindahl index, the curve's slope at three TVLs, and the
+  // market's own multiple distribution. All three read DATA, nothing is
+  // hardcoded, and a data.js without them simply shows nothing.
+  function renderConcentration() {
+    var sectors = DATA.sectors;
+    var bands = DATA.ratio_bands;
+    var slopes = DATA.curve_slopes || [];
+    if (!sectors || !bands) return null;
+    var top = (sectors.categories && sectors.categories[0]) || null;
+    var slopeLine = slopes.length === 3
+      ? 'The curve\u2019s slope is ' + slopes[0].slope.toFixed(3) + ' at ' + fmtUsd(slopes[0].tvl_usd) + ' of TVL, ' + slopes[1].slope.toFixed(3) + ' at ' + fmtUsd(slopes[1].tvl_usd) + ' and ' + slopes[2].slope.toFixed(3) + ' at ' + fmtUsd(slopes[2].tvl_usd) + ' — it steepens as a protocol grows, which is the bend the blind test rewards.'
+      : '';
+    return el('div', {},
+      el('h3', {}, 'Where the board concentrates'),
+      el('p', {}, 'The board\u2019s ' + DATA.board_size + ' rows spread across ' + sectors.categories.length + ' categories. ' +
+        (top ? 'The largest, ' + top.category + ', holds ' + Math.round(top.value_share * 100) + '% of the board\u2019s implied value across ' + top.rows + ' row' + (top.rows === 1 ? '' : 's') + '. ' : '') +
+        'The Herfindahl index over implied value is ' + sectors.herfindahl.toFixed(3) + ' (1 means one category holds everything, near 0 means the value spreads evenly), so ' +
+        (sectors.herfindahl > 0.5 ? 'this board is one sector\u2019s story more than many.' : 'this board\u2019s value spreads across sectors.')),
+      (function () {
+        var t = el('table', { class: 'sectors' });
+        t.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'Category'), el('th', {}, 'Rows'), el('th', {}, 'Share of board'), el('th', {}, 'Implied value'), el('th', {}, 'Share of value'))));
+        var body = el('tbody');
+        sectors.categories.forEach(function (c) {
+          body.appendChild(el('tr', {},
+            el('td', {}, c.category),
+            el('td', { class: 'num' }, String(c.rows)),
+            el('td', { class: 'num' }, Math.round(c.row_share * 100) + '%'),
+            el('td', { class: 'num' }, fmtUsd(c.implied_value_usd)),
+            el('td', { class: 'num' }, Math.round(c.value_share * 100) + '%')
+          ));
+        });
+        t.appendChild(body);
+        return t;
+      })(),
+      el('h3', {}, 'What the market itself pays'),
+      el('p', {}, 'The fitted curve prices the board, but the market\u2019s own multiples across the ' + bands.n + ' comparables are the check: the smallest pays ' + fmtMult(bands.min) + ', the middle pays ' + fmtMult(bands.median) + ' (the lower and upper quarters sit at ' + fmtMult(bands.p25) + ' and ' + fmtMult(bands.p75) + '), the largest pays ' + fmtMult(bands.max) + '. ' + slopeLine),
+      (function () {
+        var t = el('table', { class: 'bands' });
+        t.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'Mcap / TVL band'), el('th', {}, 'Protocols'), el('th', {}, 'Share'))));
+        var body = el('tbody');
+        bands.bands.forEach(function (b) {
+          body.appendChild(el('tr', {},
+            el('td', {}, b.label),
+            el('td', { class: 'num' }, String(b.count)),
+            el('td', { class: 'num' }, Math.round(b.share * 100) + '%')
+          ));
+        });
+        t.appendChild(body);
+        return t;
+      })()
+    );
+  }
+
   function renderMethod() {
     var src = 'DefiLlama protocols endpoint, fetched ' + ((DATA.source || '').split('fetched ')[1] || DATA.as_of);
     var q = DATA.fit.quad || 0;
@@ -456,6 +510,7 @@
         t.appendChild(body);
         return t;
       })(),
+      renderConcentration(),
       el('p', { class: 'note' }, 'Farm plans name their gas per chain: about $5 a step on Ethereum, under $0.10 on Solana, about $0.50 on a cheap EVM chain, about $1 anywhere else — planning figures for a simple transaction, not quotes. Source: ' + src + '. A board\u2019s implied value is this entry\u2019s own claim, never a prediction of whether or when a token is issued.')
     );
     return section;
