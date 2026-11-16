@@ -1,4 +1,4 @@
-// Launch Radar (radar-3): read the sealed snapshot, write the ranked board,
+// Launch Radar (radar-4): read the sealed snapshot, write the ranked board,
 // the dashboard's data, and the dossier. Standard library only, no network,
 // deterministic: two runs write the same bytes.
 //
@@ -43,9 +43,9 @@ function main(): void {
 
   const total = board.reduce((a, r) => a + r.implied_value_usd, 0);
   console.log(
-    `radar-3: ${board.length} rows (${radar.watchlist_size} watchlist + ${radar.early_size} early), ` +
+    `radar-4: ${board.length} rows (${radar.watchlist_size} watchlist + ${radar.early_size} early), ` +
       `top ${board[0]!.name} ${board[0]!.implied_value_usd}, total ${total}, ` +
-      `fit log10(mcap) = ${radar.fit.intercept} + ${radar.fit.slope} * log10(TVL) on ${radar.fit.n} comps, ` +
+      `fit log10(mcap) = ${radar.fit.intercept} + ${radar.fit.slope} * log10(TVL) + ${radar.fit.quad} * log10(TVL)^2 on ${radar.fit.n} comps, ` +
       `dossier ${dossier.byteLength} bytes`,
   );
 }

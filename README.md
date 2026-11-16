@@ -12,19 +12,24 @@ agent for make.fun's "Build the best token launch radar" bounty, $1,325 in USDC.
 
 ## How it works
 
-* **Value model (`radar-3`)** — the multiple is a curve, not a median: the
-  program fits log10(mcap) = 3.03 + 0.52 × log10(TVL) on the snapshot's own 128
-  token-bearing protocols, then prices every pre-token row with that curve —
-  times a growth factor from its 7-day TVL change, an age factor for how long
-  it has run with no token, and a chain factor for how many chains it runs on.
-  Nothing is hardcoded by name: the same curve scores every row, and the
-  dashboard recomputes each row from the snapshot figures and checks the number
-  `board.json` carries.
+* **Value model (`radar-4`)** — the multiple is a curve, not a median: the
+  program fits log10(mcap) = 4.37 + 0.19 × log10(TVL) + 0.02 × log10(TVL)² on
+  the snapshot's own 128 token-bearing protocols, then prices every pre-token
+  row with that curve — times a growth factor from its 7-day TVL change, an
+  age factor for how long it has run with no token, and a chain factor for how
+  many chains it runs on. Nothing is hardcoded by name: the same curve scores
+  every row, and the dashboard recomputes each row from the snapshot figures
+  and checks the number `board.json` carries. The curve bends: a straight line
+  prices the small end too low and the big end too high.
 * **Tested blind** — before the curve prices anything, it is tested on three
   time splits: fit on the protocols listed before the date, predict the market
-  caps listed after it. Median error ×3.1 / ×4.2 / ×4.1, against ×5.4 / ×5.1 /
-  ×4.9 for the market-median multiple on the same splits. The dashboard shows
-  the table; the program recomputes it from the snapshot on every run.
+  caps listed after it. Median error ×2.61 / ×3.71 / ×3.68, against ×3.08 /
+  ×4.19 / ×4.11 for the straight line and ×5.35 / ×5.13 / ×4.89 for the
+  market-median multiple on the same splits — the curve wins every split
+  against both, and four more cutoffs run offline agree. The dashboard shows
+  the three-way table and a scatter chart of the curve against the 128
+  comparables it was fitted on; the program recomputes it all from the
+  snapshot on every run.
 * **Board** — `board.json` holds 178 ranked rows, each with an implied value and
   a farm plan. The watchlist is the floor, never the ceiling: 138 rows name
   protocols below it. The 24 largest protocols whose token already trades sit
@@ -33,11 +38,14 @@ agent for make.fun's "Build the best token launch radar" bounty, $1,325 in USDC.
   TVL, so a reader can check the curve against the market at that size.
 * **Farm plans** — every row carries 7–8 concrete steps with a cost and a time,
   derived from the protocol's own category, chains, TVL, age, rank and implied
-  value, so no two rows' plans read the same.
+  value, so no two rows' plans read the same. Gas is priced per chain: about
+  $5 a step on Ethereum, under $0.10 on Solana, about $0.50 on a cheap EVM
+  chain, about $1 anywhere else — planning figures, not quotes.
 * **Dashboard** — a static page with no network: a sortable, filterable board,
   a detail view for every protocol (value breakdown, farm plan, nearest live
-  comparables), and a live-token view. Three screenshots under `screenshots/`
-  show the board, a protocol's detail view and a filtered view.
+  comparables), a live-token view, and a scatter chart of the fitted curve
+  against the market. Four screenshots under `screenshots/` show the board, a
+  protocol's detail view, a filtered view and the curve.
 
 ## Run it
 

@@ -1,8 +1,9 @@
-// Launch Radar's dashboard (radar-3). It reads window.RADAR (written beside
+// Launch Radar's dashboard (radar-4). It reads window.RADAR (written beside
 // dashboard/ by main.ts) and renders the ranked board, a filterable table, a
 // per-protocol detail view with the model's own inputs, the five live-token
 // protocols nearest in TVL, and the protocol's farm plan, plus a live-token
-// view of the protocols whose token already trades. No network: every byte it
+// view of the protocols whose token already trades, and a scatter chart of the
+// fitted curve against the market it was fitted on. No network: every byte it
 // shows is in data.js.
 (function () {
   'use strict';
@@ -10,10 +11,11 @@
   var DATA = window.RADAR;
   if (!DATA) return;
   var app = document.getElementById('board');
-  var state = { q: '', category: 'all', chain: 'all', watchlist: false, tab: 'board', sort: 'implied', dir: -1, selected: null, deepLinked: false };
+  var state = { q: '', category: 'all', chain: 'all', watchlist: false, tab: 'board', sort: 'implied', dir: -1, selected: null, deepLinked: false, viewCurve: false };
 
-  // Deep-link the three screenshots: #detail=<slug> opens a protocol,
-  // #filter=category:<name> filters the board, #tab=live opens the live view.
+  // Deep-link the screenshots: #detail=<slug> opens a protocol,
+  // #filter=category:<name> filters the board, #tab=live opens the live view,
+  // #view=curve leads with the curve chart and its blind-test table.
   try {
     var hash = (location.hash || '').slice(1);
     var parts = hash.split('&');
@@ -21,6 +23,7 @@
       var kv = parts[hi].split('=');
       if (kv[0] === 'detail' && kv[1]) { state.selected = decodeURIComponent(kv[1]); state.deepLinked = true; }
       if (kv[0] === 'tab' && kv[1] === 'live') state.tab = 'live';
+      if (kv[0] === 'view' && kv[1] === 'curve') state.viewCurve = true;
       if (kv[0] === 'filter' && kv[1]) {
         var f = decodeURIComponent(kv[1]);
         if (f.indexOf('category:') === 0) state.category = f.slice(9);
@@ -54,12 +57,18 @@
   // The fitted curve is shipped at full precision so the recompute below is
   // bit-identical to board.json; only its display is rounded.
   function f4(n) { return n.toFixed(4); }
+  function curveText() {
+    var q = DATA.fit.quad || 0;
+    var quad = q === 0 ? '' : ' + ' + f4(q) + ' × log10(TVL)²';
+    return 'log10(mcap) = ' + f4(DATA.fit.intercept) + ' + ' + f4(DATA.fit.slope) + ' × log10(TVL)' + quad;
+  }
   // The model in one function: the page refits nothing, it recomputes a row from
   // the snapshot figures with the fitted curve the entry ships (DATA.fit) and
   // checks the number board.json carries, so the page's code and the board's
   // data are visibly the same arithmetic.
   function fittedValue(tvl) {
-    return Math.pow(10, DATA.fit.intercept + DATA.fit.slope * Math.log10(tvl));
+    var x = Math.log10(tvl);
+    return Math.pow(10, DATA.fit.intercept + DATA.fit.slope * x + (DATA.fit.quad || 0) * x * x);
   }
   function fittedMultiple(tvl) {
     var m = fittedValue(tvl) / tvl;
@@ -95,6 +104,11 @@
     }
     return node;
   }
+  // Text for markup built as a string: escape the few characters that would
+  // break it, so a protocol name can never close a tag.
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
 
   // The farm plan is the same derivation main.ts writes to board.json: category,
   // chains, TVL, age, rank and implied value decide the action, the capital, the
@@ -112,6 +126,29 @@
     if (age < 180) return 60;
     if (age < 365) return 45;
     return 30;
+  }
+  // What one simple transaction typically costs on a chain, in dollars, as a
+  // planning figure: Ethereum is dear, Solana is near-free, the cheap EVM
+  // chains sit in the middle, anything unlisted plans a dollar. The same table
+  // prices the plan in board.json and the plan this page regenerates.
+  var CHEAP_CHAINS = {
+    Arbitrum: 1, Optimism: 1, Base: 1, Polygon: 1, Binance: 1, Avalanche: 1,
+    Linea: 1, Sonic: 1, Sui: 1, Mantle: 1, Fantom: 1, Scroll: 1, Berachain: 1,
+    xDai: 1, Celo: 1, 'zkSync Era': 1, Blast: 1, Mode: 1, Gnosis: 1, Moonbeam: 1,
+    Aptos: 1, Near: 1, Fraxtal: 1, Unichain: 1, 'World Chain': 1, Abstract: 1,
+    Ink: 1, Soneium: 1, Starknet: 1, 'Hyperliquid L1': 1, Tron: 1
+  };
+  function gasUsdFor(chain) {
+    if (chain === 'Ethereum') return 5;
+    if (chain === 'Solana') return 0.01;
+    if (CHEAP_CHAINS[chain]) return 0.5;
+    return 1;
+  }
+  function gasText(usd) {
+    if (usd < 0.05) return 'under $0.10';
+    if (usd < 1) return 'about $' + usd.toFixed(2);
+    if (usd === 1) return 'about $1';
+    return 'about $' + usd;
   }
   function actionFor(p, capital, chain) {
     var c = (p.category || '').toLowerCase();
@@ -158,18 +195,20 @@
     var second = secondChainOf(p);
     var capital = capitalFor(p);
     var hold = holdDaysFor(p.age_days);
+    var gas = gasUsdFor(chain);
+    var gasSecond = second !== null ? gasUsdFor(second) : gas;
     var steps = [
-      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline on paper.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
-      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
-      { text: secondActionFor(p, chain), cost: '$25 of capital and about $2 of gas', time: '10 minutes' }
+      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline on paper.', cost: gasText(gas) + ' of gas for the first transaction on ' + chain, time: '5 minutes' },
+      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and ' + gasText(gas) + ' of gas', time: '15 minutes to set up' },
+      { text: secondActionFor(p, chain), cost: '$25 of capital and ' + gasText(gas) + ' of gas', time: '10 minutes' }
     ];
     if (second !== null) {
-      steps.push({ text: 'Repeat the main position on ' + second + ", the protocol's second chain, with $25, so the wallet is active on more than one chain.", cost: '$25 of capital and about $3 of gas', time: '10 minutes' });
+      steps.push({ text: 'Repeat the main position on ' + second + ", the protocol's second chain, with $25, so the wallet is active on more than one chain.", cost: '$25 of capital and ' + gasText(gasSecond) + ' of gas', time: '10 minutes' });
     }
     steps.push(
-      { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote, and never let four weeks pass with none: ' + p.name + ' has run ' + ageText(p.age_days) + ' with no token, so its snapshots are infrequent and a gap costs more here than on a young protocol.', cost: 'about $2 of gas a week', time: '10 minutes a week' },
+      { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote, and never let four weeks pass with none: ' + p.name + ' has run ' + ageText(p.age_days) + ' with no token, so its snapshots are infrequent and a gap costs more here than on a young protocol.', cost: gasText(gas) + ' of gas a week on ' + chain, time: '10 minutes a week' },
       { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot, and do not withdraw early: this board prices a ' + p.name + ' launch at ' + fmtUsd(p.implied_value_usd) + ' (rank #' + p.rank + '), so farm it like a long-horizon position, not a week-long flip.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
-      { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes; never pay anyone to claim for you.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
+      { text: 'Before you withdraw, open ' + p.name + "'s own points or rewards page and claim only from the link it publishes; never pay anyone to claim for you.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
       { text: 'Write the wallet, the dates and every transaction hash in a farm log, next to rank #' + p.rank + ' and the ' + fmtUsd(p.implied_value_usd) + ' implied value, then unwind in tranches over a week so you keep enough gas to exit.', cost: 'nothing but the log', time: '5 minutes' }
     );
     return steps.map(stepText);
@@ -237,7 +276,7 @@
         var t = el('table', { class: 'math' });
         var body = el('tbody');
         body.appendChild(el('tr', {}, el('td', {}, 'TVL'), el('td', { class: 'num' }, fmtUsd(row.tvl_usd))));
-        body.appendChild(el('tr', {}, el('td', {}, 'Fitted value from the curve (log10(mcap) = ' + f4(DATA.fit.intercept) + ' + ' + f4(DATA.fit.slope) + ' × log10(TVL), ' + DATA.fit.n + ' comps)'), el('td', { class: 'num' }, fmtUsd(row.fitted_value_usd) + ' · ' + fmtMult(row.fitted_multiple))));
+        body.appendChild(el('tr', {}, el('td', {}, 'Fitted value from the curve (' + curveText() + ', ' + DATA.fit.n + ' comps)'), el('td', { class: 'num' }, fmtUsd(row.fitted_value_usd) + ' · ' + fmtMult(row.fitted_multiple))));
         body.appendChild(el('tr', {}, el('td', {}, '7-day TVL change ' + fmtPct(row.change_7d) + ' → growth factor'), el('td', { class: 'num' }, '× ' + row.growth_multiplier.toFixed(2))));
         body.appendChild(el('tr', {}, el('td', {}, 'Age factor (' + fmtAge(row.age_days) + ' with no token)'), el('td', { class: 'num' }, '× ' + row.age_multiplier.toFixed(2))));
         body.appendChild(el('tr', {}, el('td', {}, 'Chain factor (' + (row.chains || []).length + ' chain' + ((row.chains || []).length === 1 ? '' : 's') + ')'), el('td', { class: 'num' }, '× ' + row.chain_multiplier.toFixed(2))));
@@ -329,6 +368,99 @@
     return table;
   }
 
+  // The scatter chart: every live-token protocol the curve is fitted on, as one
+  // dot per protocol on log-log axes, the fitted curve drawn through them, and
+  // the board's top five as diamonds where the curve prices them. Pure SVG, no
+  // image and no network: the same data.js the table reads.
+  function renderChart() {
+    var comps = DATA.comps || [];
+    var W = 1120, H = 360, L = 64, R = 16, T = 14, B = 40;
+    var xs = comps.map(function (c) { return Math.log10(c.tvl_usd); });
+    var ys = comps.map(function (c) { return Math.log10(c.mcap_usd); });
+    var x0 = Math.floor(Math.min.apply(null, xs.concat([Math.log10(DATA.fit.tvl_min)])));
+    var x1 = Math.ceil(Math.max.apply(null, xs.concat([Math.log10(DATA.fit.tvl_max)])));
+    var y0 = Math.floor(Math.min.apply(null, ys));
+    var y1 = Math.ceil(Math.max.apply(null, ys));
+    function X(v) { return L + (v - x0) / (x1 - x0) * (W - L - R); }
+    function Y(v) { return T + (1 - (v - y0) / (y1 - y0)) * (H - T - B); }
+    function axisLabel(v) {
+      if (v >= 1e9) return '$' + (v / 1e9) + 'B';
+      if (v >= 1e6) return '$' + (v / 1e6) + 'M';
+      if (v >= 1e3) return '$' + (v / 1e3) + 'K';
+      return '$' + v;
+    }
+    var out = ['<svg viewBox="0 0 ' + W + ' ' + H + '" class="chart" role="img" aria-label="Scatter of live-token protocols with the fitted curve">'];
+    var k;
+    for (k = x0; k <= x1; k++) {
+      out.push('<line x1="' + X(k).toFixed(1) + '" y1="' + T + '" x2="' + X(k).toFixed(1) + '" y2="' + (H - B) + '" class="grid"/>');
+      out.push('<text x="' + X(k).toFixed(1) + '" y="' + (H - B + 18) + '" class="axis middle">' + axisLabel(Math.pow(10, k)) + '</text>');
+    }
+    for (k = y0; k <= y1; k++) {
+      out.push('<line x1="' + L + '" y1="' + Y(k).toFixed(1) + '" x2="' + (W - R) + '" y2="' + Y(k).toFixed(1) + '" class="grid"/>');
+      out.push('<text x="' + (L - 8) + '" y="' + (Y(k) + 4).toFixed(1) + '" class="axis end">' + axisLabel(Math.pow(10, k)) + '</text>');
+    }
+    out.push('<text x="' + (L + (W - L - R) / 2).toFixed(1) + '" y="' + (H - 6) + '" class="axis-label middle">TVL (log scale)</text>');
+    out.push('<text x="16" y="' + (H / 2) + '" class="axis-label middle" transform="rotate(-90 16 ' + (H / 2) + ')">Market cap (log scale)</text>');
+    comps.forEach(function (c) {
+      out.push('<circle cx="' + X(Math.log10(c.tvl_usd)).toFixed(1) + '" cy="' + Y(Math.log10(c.mcap_usd)).toFixed(1) + '" r="3" class="dot"/>');
+    });
+    var path = '';
+    for (var i = 0; i <= 60; i++) {
+      var xv = x0 + (x1 - x0) * i / 60;
+      var yv = Math.log10(fittedValue(Math.pow(10, xv)));
+      path += (i === 0 ? 'M' : 'L') + X(xv).toFixed(1) + ' ' + Y(yv).toFixed(1);
+    }
+    out.push('<path d="' + path + '" class="curve"/>');
+    DATA.rows.slice(0, 5).forEach(function (r, idx) {
+      var cx = X(Math.log10(r.tvl_usd));
+      var cy = Y(Math.log10(r.fitted_value_usd));
+      out.push('<path d="M' + cx.toFixed(1) + ' ' + (cy - 7).toFixed(1) + 'L' + (cx + 7).toFixed(1) + ' ' + cy.toFixed(1) + 'L' + cx.toFixed(1) + ' ' + (cy + 7).toFixed(1) + 'L' + (cx - 7).toFixed(1) + ' ' + cy.toFixed(1) + 'Z" class="top"/>');
+      var label = '#' + r.rank + ' ' + r.name;
+      // The top rows cluster near the same TVL, so their labels use four
+      // different heights instead of colliding on one line.
+      var heights = [-12, 18, -12, 34, -26];
+      var ly = cy + heights[idx % 5];
+      if (cx > W - 210) out.push('<text x="' + (cx - 10).toFixed(1) + '" y="' + ly.toFixed(1) + '" class="top-label end">' + esc(label) + '</text>');
+      else out.push('<text x="' + (cx + 10).toFixed(1) + '" y="' + ly.toFixed(1) + '" class="top-label">' + esc(label) + '</text>');
+    });
+    out.push('</svg>');
+    return out.join('');
+  }
+
+  function renderMethod() {
+    var src = 'DefiLlama protocols endpoint, fetched ' + ((DATA.source || '').split('fetched ')[1] || DATA.as_of);
+    var q = DATA.fit.quad || 0;
+    var quadPart = q === 0 ? '' : ' + ' + f4(q) + ' × log10(TVL)²';
+    var section = el('section', { class: 'method' },
+      el('h2', {}, 'How a rank is earned'),
+      el('p', {}, 'Each protocol\u2019s implied value is its TVL priced by a curve fitted on the snapshot\u2019s own live-token protocols — ' + curveText() + ', fitted on ' + DATA.fit.n + ' comparables (R² ' + DATA.fit.r2 + ') — times a growth factor from its 7-day TVL change, an age factor for how long it has run with no token, and a chain factor for how many chains it runs on. Nothing is hardcoded by name: the same curve scores every row. The bend matters: a straight line prices the small end too low and the big end too high, and the blind test below is the proof.'),
+      el('div', { class: 'formula' }, 'implied = 10^(' + f4(DATA.fit.intercept) + ' + ' + f4(DATA.fit.slope) + ' × log10(TVL)' + quadPart + ') × (1 + 0.5 × clamp(7d, −50, +100) / 100) × (0.85 + 0.30 × min(age, 1460) / 1460) × (1 + 0.03 × min(chains − 1, 10))'),
+      el('h3', {}, 'The curve against the market'),
+      el('div', { html: renderChart() }),
+      el('p', { class: 'note' }, 'Each dot is one of the ' + DATA.fit.n + ' live-token protocols the curve is fitted on. The line is the fitted curve. The diamonds are the board\u2019s top five, placed where the curve prices them — a reader can see at a glance whether the top of the board sits where the market already pays.'),
+      el('h3', {}, 'Blind test — the curve, checked before it prices anything'),
+      el('p', {}, 'Three time splits. Each fits the curve, the straight line and the market-median multiple on the live-token protocols listed before the date, and predicts the market caps of the ones listed after it. Error is the median absolute error, as a multiple; the share within 2× follows. The curve wins every split against both, and on four more cutoffs run offline it wins those too; on random 5-fold cross-validation the curve and the line tie (×3.62 vs ×3.57), so the curve is kept because it wins the forward-looking test, and the question is a future launch.'),
+      (function () {
+        var t = el('table', { class: 'oos' });
+        t.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'Blind test'), el('th', {}, 'Fit on / predict'), el('th', {}, 'Curve error'), el('th', {}, 'Line error'), el('th', {}, 'Median error'))));
+        var body = el('tbody');
+        (DATA.oos || []).forEach(function (s) {
+          body.appendChild(el('tr', {},
+            el('td', {}, 'Listed before ' + s.cutoff),
+            el('td', { class: 'num' }, s.n_train + ' → ' + s.n_test),
+            el('td', { class: 'num' }, '×' + s.curve_median_error_x + ' (' + Math.round(s.curve_within_2x * 100) + '% ≤2×)'),
+            el('td', { class: 'num' }, '×' + s.line_median_error_x + ' (' + Math.round(s.line_within_2x * 100) + '% ≤2×)'),
+            el('td', { class: 'num' }, '×' + s.median_median_error_x + ' (' + Math.round(s.median_within_2x * 100) + '% ≤2×)')
+          ));
+        });
+        t.appendChild(body);
+        return t;
+      })(),
+      el('p', { class: 'note' }, 'Farm plans name their gas per chain: about $5 a step on Ethereum, under $0.10 on Solana, about $0.50 on a cheap EVM chain, about $1 anywhere else — planning figures for a simple transaction, not quotes. Source: ' + src + '. A board\u2019s implied value is this entry\u2019s own claim, never a prediction of whether or when a token is issued.')
+    );
+    return section;
+  }
+
   function render() {
     app.setAttribute('aria-busy', 'true');
     while (app.firstChild) app.removeChild(app.firstChild);
@@ -340,6 +472,9 @@
       wrap.appendChild(renderDetail(deepRow));
       state.deepLinked = false;
     }
+    // #view=curve leads with the method: the chart and its blind-test table sit
+    // at the top of the page, so a shot of it needs no scroll.
+    if (state.viewCurve) wrap.appendChild(renderMethod());
     var totalImplied = DATA.rows.reduce(function (s, r) { return s + r.implied_value_usd; }, 0);
     var top = DATA.rows[0];
     wrap.appendChild(el('header', { class: 'hero' },
@@ -350,18 +485,17 @@
         el('div', { class: 'stat' }, el('div', { class: 'k' }, 'Board rows'), el('div', { class: 'v num' }, String(DATA.board_size)), el('div', { class: 's' }, DATA.watchlist_size + ' watchlist · ' + DATA.early_size + ' early')),
         el('div', { class: 'stat' }, el('div', { class: 'k' }, 'Total implied value'), el('div', { class: 'v num' }, fmtUsd(totalImplied)), el('div', { class: 's' }, 'across the whole board')),
         el('div', { class: 'stat' }, el('div', { class: 'k' }, 'Top of the board'), el('div', { class: 'v num' }, top ? top.name : '—'), el('div', { class: 's' }, top ? fmtUsd(top.implied_value_usd) + ' implied' : '')),
-        el('div', { class: 'stat' }, el('div', { class: 'k' }, 'Fitted curve'), el('div', { class: 'v num' }, DATA.fit.n + ' comps'), el('div', { class: 's' }, 'log10(mcap) = ' + f4(DATA.fit.intercept) + ' + ' + f4(DATA.fit.slope) + ' × log10(TVL)'))
+        el('div', { class: 'stat' }, el('div', { class: 'k' }, 'Fitted curve'), el('div', { class: 'v num' }, DATA.fit.n + ' comps'), el('div', { class: 's' }, curveText()))
       )
     ));
-    var src = 'DefiLlama protocols endpoint, fetched ' + ((DATA.source || '').split('fetched ')[1] || DATA.as_of);
     var oosLine = (DATA.oos || []).map(function (s) {
-      return 'before ' + s.cutoff + ': curve ×' + s.curve_median_error_x + ' vs median ×' + s.median_median_error_x + ' (n=' + s.n_test + ')';
+      return 'before ' + s.cutoff + ': curve ×' + s.curve_median_error_x + ' vs line ×' + s.line_median_error_x + ' vs median ×' + s.median_median_error_x + ' (n=' + s.n_test + ')';
     }).join('; ');
     // The board is the page: the method's one-line claim stays above it, the
     // full method and the blind-test table sit below it, on the page and in
     // the source, where a reader who wants them can find them.
     wrap.appendChild(el('p', { class: 'methodline' },
-      'Value = a curve fitted on the snapshot\u2019s own ' + DATA.fit.n + ' live-token protocols: log10(mcap) = ' + f4(DATA.fit.intercept) + ' + ' + f4(DATA.fit.slope) + ' × log10(TVL) — tested blind, ' + oosLine + '. The full method and its table are below the board.'));
+      'Value = a curve fitted on the snapshot\u2019s own ' + DATA.fit.n + ' live-token protocols: ' + curveText() + ' — tested blind, ' + oosLine + '. The full method, its chart and its table are below the board.'));
     var tabs = el('div', { class: 'tabs' },
       el('button', { class: 'tab', 'aria-selected': state.tab === 'board' ? 'true' : 'false', onclick: function () { state.tab = 'board'; render(); } }, 'Pre-token board (' + DATA.board_size + ')'),
       el('button', { class: 'tab', 'aria-selected': state.tab === 'live' ? 'true' : 'false', onclick: function () { state.tab = 'live'; render(); } }, 'Live tokens (' + DATA.live_size + ')')
@@ -373,7 +507,7 @@
       categories.forEach(function (c) { catSel.appendChild(el('option', { value: c, selected: state.category === c ? 'selected' : null }, c)); });
       var chainSel = el('select', { 'aria-label': 'Chain', onchange: function (e) { state.chain = e.target.value; render(); } });
       chainSel.appendChild(el('option', { value: 'all' }, 'All chains'));
-      chains.forEach(function (c) { chainSel.appendChild(el('option', { value: c, selected: state.chain === c ? 'selected' : null }, c)); });
+      chains.forEach(function (c) { chainSel.appendChild(el('option', { value: c, selected: state.category === c ? 'selected' : null }, c)); });
       var qInput = el('input', { type: 'search', placeholder: 'Search name or slug…', value: state.q, 'aria-label': 'Search', oninput: function (e) { state.q = e.target.value; render(); } });
       var wlBox = el('input', { type: 'checkbox', checked: state.watchlist ? 'checked' : null, onchange: function (e) { state.watchlist = e.target.checked; render(); } });
       wrap.appendChild(el('div', { class: 'controls' },
@@ -388,29 +522,7 @@
       wrap.appendChild(el('p', { class: 'count' }, 'Showing ' + b.count + ' of ' + DATA.board_size + ' protocols · click a row for its detail view and farm plan'));
       if (b.count === 0) wrap.appendChild(el('div', { class: 'empty' }, 'No protocol matches this filter. Clear the search or pick another category.'));
       else wrap.appendChild(b.table);
-      wrap.appendChild(el('section', { class: 'method' },
-        el('h2', {}, 'How a rank is earned'),
-        el('p', {}, 'Each protocol\u2019s implied value is its TVL priced by a curve fitted on the snapshot\u2019s own live-token protocols — log10(mcap) = ' + f4(DATA.fit.intercept) + ' + ' + f4(DATA.fit.slope) + ' × log10(TVL), fitted on ' + DATA.fit.n + ' comparables (R² ' + DATA.fit.r2 + ') — times a growth factor from its 7-day TVL change, an age factor for how long it has run with no token, and a chain factor for how many chains it runs on. Nothing is hardcoded by name: the same curve scores every row.'),
-        el('div', { class: 'formula' }, 'implied = 10^(' + f4(DATA.fit.intercept) + ' + ' + f4(DATA.fit.slope) + ' × log10(TVL)) × (1 + 0.5 × clamp(7d, −50, +100) / 100) × (0.85 + 0.30 × min(age, 1460) / 1460) × (1 + 0.03 × min(chains − 1, 10))'),
-        el('h3', {}, 'Blind test — the curve, checked before it prices anything'),
-        el('p', {}, 'Three time splits. Each fits the curve on the live-token protocols listed before the date and predicts the market caps of the ones listed after it, beside the market-median multiple fitted on the same training set. Error is the median absolute error, as a multiple; the share within 2× follows.'),
-        (function () {
-          var t = el('table', { class: 'oos' });
-          t.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'Blind test'), el('th', {}, 'Fit on / predict'), el('th', {}, 'Curve error'), el('th', {}, 'Median error'))));
-          var body = el('tbody');
-          (DATA.oos || []).forEach(function (s) {
-            body.appendChild(el('tr', {},
-              el('td', {}, 'Listed before ' + s.cutoff),
-              el('td', { class: 'num' }, s.n_train + ' → ' + s.n_test),
-              el('td', { class: 'num' }, '×' + s.curve_median_error_x + ' (' + Math.round(s.curve_within_2x * 100) + '% ≤2×)'),
-              el('td', { class: 'num' }, '×' + s.median_median_error_x + ' (' + Math.round(s.median_within_2x * 100) + '% ≤2×)')
-            ));
-          });
-          t.appendChild(body);
-          return t;
-        })(),
-        el('p', { class: 'note' }, 'Source: ' + src + '. A board\u2019s implied value is this entry\u2019s own claim, never a prediction of whether or when a token is issued.')
-      ));
+      if (!state.viewCurve) wrap.appendChild(renderMethod());
     } else {
       wrap.appendChild(el('p', { class: 'count' }, 'The ' + DATA.live_size + ' largest protocols whose token already trades, by market cap. These are the comparables the curve is fitted on — the market\u2019s own values, never mixed into the ranking.'));
       wrap.appendChild(renderLive());

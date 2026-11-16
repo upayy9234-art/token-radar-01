@@ -115,6 +115,19 @@ ol.plan .cost { color: var(--muted); font-size: 13px; }
 .comps th, .comps td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--border); }
 .comps th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
 .comps td:last-child, .comps td:nth-child(3), .comps td:nth-child(4) { text-align: right; font-family: var(--font-num); }
+/* The scatter chart: one dot per comparable, the fitted curve through them,
+   the board's top five as amber diamonds. Pure SVG, drawn from data.js. */
+.chart { width: 100%; height: auto; display: block; margin-top: var(--step-2); }
+.chart .grid { stroke: var(--border); stroke-width: 1; }
+.chart .dot { fill: var(--muted); opacity: .7; }
+.chart .curve { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+.chart .top { fill: var(--amber); stroke: var(--canvas); stroke-width: 1; }
+.chart text { fill: var(--faint); font-size: 11px; font-family: var(--font-num); }
+.chart .axis-label { fill: var(--muted); }
+.chart .axis.middle, .chart .axis-label.middle { text-anchor: middle; }
+.chart .axis.end, .chart .top-label.end { text-anchor: end; }
+.chart .top-label { fill: var(--ink); }
+
 .note { color: var(--faint); font-size: 13px; margin-top: var(--step-2); }
 footer.foot { color: var(--faint); font-size: 13px; border-top: 1px solid var(--border); margin-top: var(--step-5); padding-top: var(--step-3); }
 footer.foot p { margin-bottom: 6px; }

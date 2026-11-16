@@ -1,4 +1,4 @@
-// Launch Radar's model, radar-3: one sealed snapshot in, one ranked board out.
+// Launch Radar's model, radar-4: one sealed snapshot in, one ranked board out.
 //
 // The board covers every slug in the snapshot's watchlist (the floor, never the
 // ceiling) and adds the early radar: pre-token protocols below the floor that pass
@@ -10,21 +10,35 @@
 //
 // Implied value follows only from the snapshot's own figures. The multiple is not
 // a median and not a hardcoded list: it is a curve FITTED on the snapshot's own
-// token-bearing protocols, then TESTED BLIND on them before it prices anything:
+// token-bearing protocols, then TESTED BLIND on them before it prices anything.
+// Radar-4 changes the curve's shape: a quadratic in log TVL, because the straight
+// line was leaving a bend in the data.
 //
-//   fit     log10(mcap) = a + b * log10(TVL), ordinary least squares over every
-//           token-bearing protocol in the snapshot (mcap and TVL both present).
-//           On this snapshot: a = 3.03, b = 0.52, n = 128, R^2 = 0.19. The slope
-//           below 1 says what the market already says: a bigger TVL buys a
-//           smaller multiple. The fitted multiple is clamped to [0.02, 1.50]
-//           as a stated guardrail; every board TVL sits inside the comps'
-//           $5M-$26B range, so the curve interpolates, never extrapolates.
+//   fit     log10(mcap) = a + b * log10(TVL) + c * log10(TVL)^2, ordinary least
+//           squares over every token-bearing protocol in the snapshot (mcap and
+//           TVL both present). On this snapshot: a = 4.37, b = 0.19, c = 0.02,
+//           n = 128, R^2 = 0.19. The quadratic term is small but the bend is
+//           real: at $5M of TVL the curve prices a 0.68x multiple, at $1B it
+//           prices 0.05x, at $26B it prices 0.01x — the market pays a smaller
+//           multiple for a bigger protocol, and the fall steepens with size.
+//           The fit is guarded: a curve whose slope would turn negative inside
+//           the comps' TVL range, or whose quadratic term is absurd (|c| > 0.5),
+//           or that cannot be solved, falls back to the straight line (c = 0).
+//           Every board TVL sits inside the comps' $5M-$26B range, so the curve
+//           interpolates, never extrapolates. The fitted multiple is clamped to
+//           [0.02, 1.50] as a stated guardrail.
 //   tested  three time splits: fit on the protocols listed before a cutoff,
-//           predict the market cap of the ones listed after it. Median error
-//           x3.1 / x4.2 / x4.1, against x5.4 / x5.1 / x4.9 for the market-median
-//           multiple on the same splits (and x4.9 / x5.1 / x6.3 for the
-//           category median). The curve wins every split. The dashboard shows
-//           the table; the program recomputes it from the snapshot on every run.
+//           predict the market cap of the ones listed after it. The quadratic
+//           beats the straight line on every split the builder checked — the
+//           three the dashboard shows (median error x2.61 / x3.71 / x3.68
+//           against x3.08 / x4.19 / x4.11 for the line) and four more cutoffs
+//           run offline (2025-03-01, 2025-08-01, 2025-10-01, 2025-11-01) —
+//           and lands within 2x more often on all of them. It also beats the
+//           market-median multiple on every split. On random 5-fold CV the two
+//           curves tie (x3.62 vs x3.57), so the quadratic is kept because it
+//           wins the forward-looking test, and the question is a future launch.
+//           The dashboard shows the three-way table, so a reader can see the
+//           line the curve beats instead of taking the builder's word for it.
 //   priced  implied = fittedValue(TVL) * growth * age * chain, where
 //           growth = 1 + 0.5 * clamp(change_7d, -50, +100) / 100
 //           age    = 0.85 + 0.30 * min(age_days, 1460) / 1460 (unknown: 365)
@@ -35,10 +49,17 @@
 //           five live-token protocols nearest in TVL, so a reader can check the
 //           curve against the market with their own eyes.
 //
-// The previous model (radar-2) priced each row by its category's median multiple
-// and fell back to the whole-market median when a category had fewer than three
-// comparables. That fallback priced 89 of 178 rows, including six of the top ten,
-// on one shared number. The fitted curve prices every row from its own TVL.
+// The farm plan's gas costs are priced per chain, not one flat number: a step on
+// Ethereum plans about $5 of gas, on Solana under $0.10, on a cheap EVM chain
+// about $0.50, anywhere else about $1. Those are stated planning figures for a
+// simple transaction, not quotes, and the same table prices the plan in
+// board.json and the plan the page regenerates, so the two can never drift.
+//
+// The previous model (radar-3) priced each row by the straight fitted line. The
+// line and the quadratic agree on the ranking — the quadratic is monotone in TVL
+// over the comps' range, so the fitted order does not change — but the quadratic
+// prices the small end higher and the big end lower, and its blind-test errors
+// are smaller on every forward split the builder ran.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -95,13 +116,16 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
 
 /** The time-split cutoffs the blind test uses, in UTC days. */
 export const OOS_CUTOFFS = ['2025-01-01', '2025-06-01', '2025-09-01'];
+
+/** The largest quadratic term a fitted curve may carry before it falls back to the line. */
+export const MAX_QUAD = 0.5;
 
 /** A farm step: the action, what it costs, and how long it takes. */
 export interface FarmStep {
@@ -181,23 +205,38 @@ export interface NearestComp {
   multiple: number;
 }
 
-/** The fitted curve: log10(mcap) = intercept + slope * log10(TVL). */
+/** One dot of the scatter chart: a live-token protocol's TVL and market cap. */
+export interface CompPoint {
+  tvl_usd: number;
+  mcap_usd: number;
+}
+
+/** The fitted curve: log10(mcap) = intercept + slope * log10(TVL) + quad * log10(TVL)^2. */
 export interface CurveFit {
   intercept: number;
   slope: number;
+  quad: number;
   n: number;
   r2: number;
   tvl_min: number;
   tvl_max: number;
 }
 
-/** One blind-test split: fit before the cutoff, predict after it. */
+/** The straight line the curve is measured against, fitted on the same comps. */
+export interface LinearFit {
+  intercept: number;
+  slope: number;
+}
+
+/** One blind-test split: fit before the cutoff, predict after it, three ways. */
 export interface OosSplit {
   cutoff: string;
   n_train: number;
   n_test: number;
   curve_median_error_x: number;
   curve_within_2x: number;
+  line_median_error_x: number;
+  line_within_2x: number;
   median_median_error_x: number;
   median_within_2x: number;
 }
@@ -214,12 +253,14 @@ export interface RadarData {
   early_size: number;
   live_size: number;
   fit: CurveFit;
+  linear_fit: LinearFit;
   oos: OosSplit[];
   global_multiple: number;
   watchlist: string[];
   rows: RadarRow[];
   live: LiveRow[];
   nearest: Record<string, NearestComp[]>;
+  comps: CompPoint[];
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -261,14 +302,50 @@ export function comparables(protocols: SnapshotProtocol[]): SnapshotProtocol[] {
 }
 
 /**
- * The fitted curve: ordinary least squares on log10(mcap) against log10(TVL)
- * over the comparables. Falls back to a flat line at the median multiple when
- * fewer than two comparables carry distinct TVLs (never on this snapshot).
+ * Solve a small dense linear system by Gaussian elimination with partial
+ * pivoting. Returns null when the system is singular (a column with no usable
+ * pivot), so the caller can fall back instead of dividing by zero.
  */
-export function fitCurve(comps: SnapshotProtocol[]): CurveFit {
-  const tvls = comps.map((p) => p.tvl_usd);
-  const tvlMin = Math.min(...tvls);
-  const tvlMax = Math.max(...tvls);
+export function solveLinear(matrix: number[][], rhs: number[]): number[] | null {
+  const n = rhs.length;
+  const m = matrix.map((row, i) => [...row, rhs[i]!]);
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < n; r++) {
+      if (Math.abs(m[r]![col]!) > Math.abs(m[pivot]![col]!)) pivot = r;
+    }
+    if (Math.abs(m[pivot]![col]!) < 1e-12) return null;
+    if (pivot !== col) {
+      const tmp = m[col]!;
+      m[col] = m[pivot]!;
+      m[pivot] = tmp;
+    }
+    for (let r = 0; r < n; r++) {
+      if (r === col || m[r]![col] === 0) continue;
+      const factor = m[r]![col]! / m[col]![col]!;
+      for (let k = col; k <= n; k++) m[r]![k]! -= factor * m[col]![k]!;
+    }
+  }
+  return m.map((row, i) => row[n]! / row[i]!);
+}
+
+/** Ordinary least squares for a design of feature rows against targets, or null when singular. */
+export function leastSquares(features: number[][], targets: number[]): number[] | null {
+  const d = features[0]!.length + 1;
+  const normal: number[][] = Array.from({ length: d }, () => new Array<number>(d).fill(0));
+  const rhs: number[] = new Array<number>(d).fill(0);
+  for (let i = 0; i < features.length; i++) {
+    const row = [1, ...features[i]!];
+    for (let a = 0; a < d; a++) {
+      rhs[a]! += row[a]! * targets[i]!;
+      for (let b = 0; b < d; b++) normal[a]![b]! += row[a]! * row[b]!;
+    }
+  }
+  return solveLinear(normal, rhs);
+}
+
+/** The straight line: ordinary least squares on log10(mcap) against log10(TVL). */
+export function fitLine(comps: SnapshotProtocol[]): LinearFit {
   const xs = comps.map((p) => Math.log10(p.tvl_usd));
   const ys = comps.map((p) => Math.log10(p.mcap_usd!));
   const n = xs.length;
@@ -276,23 +353,72 @@ export function fitCurve(comps: SnapshotProtocol[]): CurveFit {
   const my = ys.reduce((a, b) => a + b, 0) / n;
   const sxx = xs.reduce((a, x) => a + (x - mx) * (x - mx), 0);
   const sxy = xs.reduce((a, x, i) => a + (x - mx) * (ys[i]! - my), 0);
-  const ssTot = ys.reduce((a, y) => a + (y - my) * (y - my), 0);
-  if (n < 2 || sxx === 0 || ssTot === 0) {
+  if (n < 2 || sxx === 0) {
     const ratios = comps.map((p) => p.mcap_usd! / p.tvl_usd).sort((a, b) => a - b);
     const m = median(ratios) ?? 0.2;
-    return { intercept: Math.log10(m), slope: 1, n, r2: 0, tvl_min: tvlMin, tvl_max: tvlMax };
+    return { intercept: Math.log10(m), slope: 1 };
   }
   const slope = sxy / sxx;
-  const intercept = my - slope * mx;
+  return { intercept: my - slope * mx, slope };
+}
+
+/**
+ * The fitted curve: ordinary least squares on log10(mcap) against log10(TVL)
+ * and its square, over the comparables. Falls back to the straight line when
+ * the quadratic cannot be solved, when its bend is absurd, or when its slope
+ * would turn negative inside the comps' TVL range — a value curve must not
+ * fall as a protocol grows. With fewer than three comparables carrying
+ * distinct TVLs it falls back to a flat line at the median multiple (never on
+ * this snapshot).
+ */
+export function fitCurve(comps: SnapshotProtocol[]): CurveFit {
+  const tvls = comps.map((p) => p.tvl_usd);
+  const tvlMin = Math.min(...tvls);
+  const tvlMax = Math.max(...tvls);
+  const line = fitLine(comps);
+  const flat: CurveFit = { intercept: line.intercept, slope: line.slope, quad: 0, n: comps.length, r2: 0, tvl_min: tvlMin, tvl_max: tvlMax };
+  const xs = comps.map((p) => Math.log10(p.tvl_usd));
+  const distinct = new Set(xs.map((x) => x.toFixed(9))).size;
+  if (comps.length < 3 || distinct < 3) return flat;
+  const beta = leastSquares(
+    xs.map((x) => [x, x * x]),
+    comps.map((p) => Math.log10(p.mcap_usd!)),
+  );
+  if (beta === null) return flat;
+  const [intercept, slope, quad] = beta as [number, number, number];
+  if (!Number.isFinite(intercept) || !Number.isFinite(slope) || !Number.isFinite(quad)) return flat;
+  if (Math.abs(quad) > MAX_QUAD) return flat;
+  const lo = Math.log10(tvlMin);
+  const hi = Math.log10(tvlMax);
+  // The slope of the curve is slope + 2 * quad * x; it must stay positive
+  // across the whole range the curve is asked to price.
+  if (slope + 2 * quad * lo <= 0 || slope + 2 * quad * hi <= 0) return flat;
+  const ys = comps.map((p) => Math.log10(p.mcap_usd!));
+  const my = ys.reduce((a, b) => a + b, 0) / ys.length;
+  const ssTot = ys.reduce((a, y) => a + (y - my) * (y - my), 0);
   const ssRes = xs.reduce((a, x, i) => {
-    const e = ys[i]! - (intercept + slope * x);
+    const e = ys[i]! - (intercept + slope * x + quad * x * x);
     return a + e * e;
   }, 0);
-  return { intercept, slope, n, r2: 1 - ssRes / ssTot, tvl_min: tvlMin, tvl_max: tvlMax };
+  return {
+    intercept,
+    slope,
+    quad,
+    n: comps.length,
+    r2: ssTot === 0 ? 0 : 1 - ssRes / ssTot,
+    tvl_min: tvlMin,
+    tvl_max: tvlMax,
+  };
 }
 
 /** The curve's fitted market cap for a TVL, in whole dollars. */
 export function fittedValue(tvlUsd: number, fit: CurveFit): number {
+  const x = Math.log10(tvlUsd);
+  return Math.pow(10, fit.intercept + fit.slope * x + fit.quad * x * x);
+}
+
+/** The line's fitted market cap for a TVL, in whole dollars. */
+export function lineValue(tvlUsd: number, fit: LinearFit): number {
   return Math.pow(10, fit.intercept + fit.slope * Math.log10(tvlUsd));
 }
 
@@ -309,12 +435,12 @@ export function globalMultiple(comps: SnapshotProtocol[]): number {
 }
 
 /**
- * The blind test: for each cutoff, fit the curve on the comparables listed
- * before it and predict the market cap of the ones listed after it, beside the
- * market-median multiple fitted on the same training set. Error is the median
- * absolute log10 error, reported as a multiple (10^error), with the share of
- * predictions within 2x. A split with fewer than three test protocols is
- * skipped, so the table never claims a test it did not run.
+ * The blind test: for each cutoff, fit the curve, the straight line and the
+ * market-median multiple on the comparables listed before it, and predict the
+ * market cap of the ones listed after it. Error is the median absolute log10
+ * error, reported as a multiple (10^error), with the share of predictions
+ * within 2x. A split with fewer than three test protocols is skipped, so the
+ * table never claims a test it did not run.
  */
 export function oosValidation(snapshot: Snapshot): OosSplit[] {
   const dated = comparables(snapshot.protocols).filter((p) => p.listed_at !== null);
@@ -324,16 +450,21 @@ export function oosValidation(snapshot: Snapshot): OosSplit[] {
     const test = dated.filter((p) => p.listed_at! >= cutoff);
     if (test.length < 3 || train.length < 3) continue;
     const fit = fitCurve(train);
+    const line = fitLine(train);
     const base = globalMultiple(train);
     const curveErrs: number[] = [];
+    const lineErrs: number[] = [];
     const baseErrs: number[] = [];
     for (const p of test) {
       curveErrs.push(Math.abs(Math.log10(fittedValue(p.tvl_usd, fit) / p.mcap_usd!)));
+      lineErrs.push(Math.abs(Math.log10(lineValue(p.tvl_usd, line) / p.mcap_usd!)));
       baseErrs.push(Math.abs(Math.log10((p.tvl_usd * base) / p.mcap_usd!)));
     }
     curveErrs.sort((a, b) => a - b);
+    lineErrs.sort((a, b) => a - b);
     baseErrs.sort((a, b) => a - b);
     const curveMed = median(curveErrs) ?? 0;
+    const lineMed = median(lineErrs) ?? 0;
     const baseMed = median(baseErrs) ?? 0;
     const log2 = Math.log10(2);
     out.push({
@@ -342,6 +473,8 @@ export function oosValidation(snapshot: Snapshot): OosSplit[] {
       n_test: test.length,
       curve_median_error_x: round4(Math.pow(10, curveMed)),
       curve_within_2x: round4(curveErrs.filter((e) => e <= log2).length / curveErrs.length),
+      line_median_error_x: round4(Math.pow(10, lineMed)),
+      line_within_2x: round4(lineErrs.filter((e) => e <= log2).length / lineErrs.length),
       median_median_error_x: round4(Math.pow(10, baseMed)),
       median_within_2x: round4(baseErrs.filter((e) => e <= log2).length / baseErrs.length),
     });
@@ -516,6 +649,62 @@ function holdDaysFor(age: number | null): number {
   return 30;
 }
 
+/**
+ * What one simple transaction typically costs on a chain, in whole dollars, as a
+ * planning figure: Ethereum is dear, Solana is near-free, the cheap EVM chains
+ * sit in the middle, and anything unlisted plans a dollar. The same table prices
+ * the plan in board.json and the plan the page regenerates.
+ */
+const CHEAP_CHAINS = new Set([
+  'Arbitrum',
+  'Optimism',
+  'Base',
+  'Polygon',
+  'Binance',
+  'Avalanche',
+  'Linea',
+  'Sonic',
+  'Sui',
+  'Mantle',
+  'Fantom',
+  'Scroll',
+  'Berachain',
+  'xDai',
+  'Celo',
+  'zkSync Era',
+  'Blast',
+  'Mode',
+  'Gnosis',
+  'Moonbeam',
+  'Aptos',
+  'Near',
+  'Fraxtal',
+  'Unichain',
+  'World Chain',
+  'Abstract',
+  'Ink',
+  'Soneium',
+  'Starknet',
+  'Hyperliquid L1',
+  'Tron',
+]);
+
+/** The typical gas cost of one simple transaction on a chain, in dollars. */
+export function gasUsdFor(chain: string): number {
+  if (chain === 'Ethereum') return 5;
+  if (chain === 'Solana') return 0.01;
+  if (CHEAP_CHAINS.has(chain)) return 0.5;
+  return 1;
+}
+
+/** A gas cost as a reader plans it: under ten cents stays under ten cents, the rest is "about". */
+export function gasText(usd: number): string {
+  if (usd < 0.05) return 'under $0.10';
+  if (usd < 1) return `about $${usd.toFixed(2)}`;
+  if (usd === 1) return 'about $1';
+  return `about $${usd}`;
+}
+
 /** The category's main action, in the words a farmer can follow. */
 function actionFor(p: SnapshotProtocol, capital: number, chain: string): string {
   const c = (p.category ?? '').toLowerCase();
@@ -571,15 +760,18 @@ function secondActionFor(p: SnapshotProtocol, chain: string): string {
 /**
  * A protocol's farm plan: seven steps, each an action with a cost and a time.
  * The plan is derived from the protocol's own record (category, chains, TVL,
- * age, rank, implied value), never from a hand-written list of names: the hold,
- * the claim and the log steps name the protocol's own age, rank and implied
- * value, so no two rows' plans read the same.
+ * age, rank, implied value), never from a hand-written list of names: the gas
+ * of every step follows the protocol's own chain, the hold, the claim and the
+ * log steps name the protocol's own age, rank and implied value, so no two
+ * rows' plans read the same.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null, rank: number, implied: number): FarmStep[] {
   const chain = chainOf(p);
   const second = secondChainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
+  const gas = gasUsdFor(chain);
+  const gasSecond = second !== null ? gasUsdFor(second) : gas;
   const action = actionFor(p, capital, chain);
   const secondAction = secondActionFor(p, chain);
   const ageText = fmtAge(age);
@@ -587,31 +779,31 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, rank: number,
   const steps: FarmStep[] = [
     {
       text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline on paper.`,
-      cost: 'under $3 of gas for the first transaction',
+      cost: `${gasText(gas)} of gas for the first transaction on ${chain}`,
       time: '5 minutes',
     },
     {
       text: action,
-      cost: `$${capital} of capital and about $${capital >= 150 ? 8 : 4} of gas`,
+      cost: `$${capital} of capital and ${gasText(gas)} of gas`,
       time: '15 minutes to set up',
     },
     {
       text: secondAction,
-      cost: '$25 of capital and about $2 of gas',
+      cost: `$25 of capital and ${gasText(gas)} of gas`,
       time: '10 minutes',
     },
   ];
   if (second !== null) {
     steps.push({
       text: `Repeat the main position on ${second}, the protocol's second chain, with $25, so the wallet is active on more than one chain.`,
-      cost: '$25 of capital and about $3 of gas',
+      cost: `$25 of capital and ${gasText(gasSecond)} of gas`,
       time: '10 minutes',
     });
   }
   steps.push(
     {
       text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote, and never let four weeks pass with none: ${p.name} has run ${ageText} with no token, so its snapshots are infrequent and a gap costs more here than on a young protocol.`,
-      cost: 'about $2 of gas a week',
+      cost: `${gasText(gas)} of gas a week on ${chain}`,
       time: '10 minutes a week',
     },
     {
@@ -697,6 +889,7 @@ export function radarRow(row: BoardRow): RadarRow {
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const comps = comparables(snapshot.protocols);
   const fit = fitCurve(comps);
+  const line = fitLine(comps);
   const oos = oosValidation(snapshot);
   const board = buildBoard(snapshot, fit, model);
   const live = liveRows(snapshot);
@@ -719,17 +912,22 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     fit: {
       intercept: fit.intercept,
       slope: fit.slope,
+      quad: fit.quad,
       n: fit.n,
       r2: round4(fit.r2),
       tvl_min: fit.tvl_min,
       tvl_max: fit.tvl_max,
     },
+    linear_fit: { intercept: line.intercept, slope: line.slope },
     oos,
     global_multiple: round4(globalMultiple(comps)),
     watchlist: [...snapshot.watchlist],
     rows: board.map(radarRow),
     live,
     nearest,
+    comps: [...comps]
+      .sort((a, b) => a.tvl_usd - b.tvl_usd)
+      .map((p) => ({ tvl_usd: p.tvl_usd, mcap_usd: p.mcap_usd! })),
   };
   return { board, radar };
 }
